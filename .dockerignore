@@ -1,0 +1,10 @@
+vendor/
+.git/
+.claude/
+node_modules/
+.idea/
+.vscode/
+*.log
+docker-compose.yml
+Dockerfile
+.dockerignore

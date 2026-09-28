@@ -129,3 +129,31 @@ To see the data behind it:
 - CSRF protection and rate limiting on the login endpoint
 - Email verification and a password reset flow
 - Moving the database credentials into an environment file
+## Run with Docker
+
+This project is fully containerized and can be configured via environment variables.
+
+**1. Start the stack**
+```bash
+docker compose up --build -d
+```
+This spins up four containers: the PHP/Apache web server, MySQL 8, MongoDB 7, and Redis 7. Databases use named volumes to persist data.
+
+**2. Open the app**
+Navigate to http://localhost:8080/
+
+### Environment Variables
+
+You can configure the application in `php/db.php` by setting these environment variables (perfect for deployments like Render). If not set, they fall back to the XAMPP defaults listed above.
+
+- `MYSQL_HOST` (default: 127.0.0.1)
+- `MYSQL_PORT` (default: 3306)
+- `MYSQL_USER` (default: root)
+- `MYSQL_PASSWORD` (default: "")
+- `MYSQL_DATABASE` (default: intern_app)
+- `MONGO_URI` (default: mongodb://127.0.0.1:27017, supports mongodb+srv://)
+- `MONGO_DB` (default: intern_app_profiles)
+- `REDIS_HOST` (default: 127.0.0.1)
+- `REDIS_PORT` (default: 6379)
+- `REDIS_PASSWORD` (default: null)
+- `REDIS_TLS` (default: false, set to 'true' to use tls for Predis)

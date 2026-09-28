@@ -2,16 +2,10 @@
 /**
  * db.php — Shared database/service connections
  *
- * MySQL  : XAMPP bundled MySQL 8.0 (localhost:3306, root, no password)
+ * Supports environments via environment variables, defaulting to local XAMPP/dev settings:
+ * MySQL  : localhost:3306, root, no password, intern_app
  * MongoDB: local instance at 127.0.0.1:27017, database "intern_app_profiles"
  * Redis  : local instance at 127.0.0.1:6379, no password
- *
- * This file is included by every PHP endpoint. It:
- *   1. Bootstraps Composer autoload (for mongodb/mongodb and predis/predis).
- *   2. Opens a MySQLi connection with prepared-statement support.
- *   3. Provides a MongoDB collection handle for profile documents.
- *   4. Provides a Redis (Predis) client for session-token storage.
- *   5. Creates the MySQL database and users table if they don't exist.
  */
 
 // ---------------------------------------------------------------------------
@@ -34,9 +28,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ---------------------------------------------------------------------------
+// Environment defaults
+// ---------------------------------------------------------------------------
+$mysqlHost = getenv('MYSQL_HOST') ?: '127.0.0.1';
+$mysqlPort = getenv('MYSQL_PORT') ?: 3306;
+$mysqlUser = getenv('MYSQL_USER') !== false ? getenv('MYSQL_USER') : 'root';
+$mysqlPass = getenv('MYSQL_PASSWORD') !== false ? getenv('MYSQL_PASSWORD') : '';
+$mysqlDb   = getenv('MYSQL_DATABASE') ?: 'intern_app';
+
+$mongoUri  = getenv('MONGO_URI') ?: 'mongodb://127.0.0.1:27017';
+$mongoDbNm = getenv('MONGO_DB') ?: 'intern_app_profiles';
+
+$redisScheme = (getenv('REDIS_TLS') === 'true') ? 'tls' : 'tcp';
+$redisHost   = getenv('REDIS_HOST') ?: '127.0.0.1';
+$redisPort   = getenv('REDIS_PORT') ?: 6379;
+$redisPass   = getenv('REDIS_PASSWORD') ?: null;
+
+// ---------------------------------------------------------------------------
 // MySQL connection
 // ---------------------------------------------------------------------------
-$mysqli = new mysqli('localhost', 'root', '', '', 3306);
+$mysqli = new mysqli($mysqlHost, $mysqlUser, $mysqlPass, '', (int)$mysqlPort);
 if ($mysqli->connect_error) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'MySQL connection failed: ' . $mysqli->connect_error]);
@@ -44,9 +55,10 @@ if ($mysqli->connect_error) {
 }
 $mysqli->set_charset('utf8mb4');
 
-// Create database if it doesn't exist, then select it
-$mysqli->query("CREATE DATABASE IF NOT EXISTS `intern_app` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-$mysqli->select_db('intern_app');
+// Create database if it doesn't exist, then select it (preventing SQLi on DB name by using backticks safely)
+$safeDb = preg_replace('/[^a-zA-Z0-9_]/', '', $mysqlDb); 
+$mysqli->query("CREATE DATABASE IF NOT EXISTS `{$safeDb}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+$mysqli->select_db($safeDb);
 
 // Create users table if it doesn't exist
 $mysqli->query("
@@ -64,8 +76,8 @@ $mysqli->query("
 // MongoDB connection
 // ---------------------------------------------------------------------------
 try {
-    $mongoClient     = new MongoDB\Client('mongodb://127.0.0.1:27017');
-    $mongoDb         = $mongoClient->intern_app_profiles;
+    $mongoClient     = new MongoDB\Client($mongoUri);
+    $mongoDb         = $mongoClient->$mongoDbNm;
     $profilesCollection = $mongoDb->profiles;
 } catch (Exception $e) {
     http_response_code(500);
@@ -77,11 +89,16 @@ try {
 // Redis connection (via Predis)
 // ---------------------------------------------------------------------------
 try {
-    $redis = new Predis\Client([
-        'scheme' => 'tcp',
-        'host'   => '127.0.0.1',
-        'port'   => 6379,
-    ]);
+    $redisConfig = [
+        'scheme' => $redisScheme,
+        'host'   => $redisHost,
+        'port'   => (int)$redisPort,
+    ];
+    if ($redisPass !== null && $redisPass !== '') {
+        $redisConfig['password'] = $redisPass;
+    }
+
+    $redis = new Predis\Client($redisConfig);
     $redis->ping(); // verify connectivity
 } catch (Exception $e) {
     http_response_code(500);
@@ -91,7 +108,6 @@ try {
 
 // ---------------------------------------------------------------------------
 // Helper: validate session token via Redis
-// Returns the numeric user ID on success, or null on failure.
 // ---------------------------------------------------------------------------
 function validateToken(Predis\Client $redis, ?string $token): ?int
 {
