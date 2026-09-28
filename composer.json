@@ -1,0 +1,12 @@
+{
+    "name": "guvi/intern-app",
+    "description": "GUVI Internship Assignment – Register, Login, Profile web app",
+    "type": "project",
+    "require": {
+        "mongodb/mongodb": "^1.19",
+        "predis/predis": "^2.2"
+    },
+    "autoload": {
+        "psr-4": {}
+    }
+}
