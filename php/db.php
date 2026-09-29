@@ -14,6 +14,16 @@
 require_once __DIR__ . '/../vendor/autoload.php';
 
 // ---------------------------------------------------------------------------
+// Helper: send a JSON response and exit
+// ---------------------------------------------------------------------------
+function jsonResponse(int $httpCode, array $data): void
+{
+    http_response_code($httpCode);
+    echo json_encode($data);
+    exit;
+}
+
+// ---------------------------------------------------------------------------
 // CORS & JSON headers (every endpoint returns JSON)
 // ---------------------------------------------------------------------------
 header('Content-Type: application/json; charset=UTF-8');
@@ -35,6 +45,8 @@ $mysqlPort = getenv('MYSQL_PORT') ?: 3306;
 $mysqlUser = getenv('MYSQL_USER') !== false ? getenv('MYSQL_USER') : 'root';
 $mysqlPass = getenv('MYSQL_PASSWORD') !== false ? getenv('MYSQL_PASSWORD') : '';
 $mysqlDb   = getenv('MYSQL_DATABASE') ?: 'intern_app';
+$mysqlSslRaw = trim(strtolower((string)(getenv('MYSQL_SSL') ?: '')));
+$mysqlSsl    = in_array($mysqlSslRaw, ['true', '1'], true);
 
 $mongoUri  = getenv('MONGO_URI') ?: 'mongodb://127.0.0.1:27017';
 $mongoDbNm = getenv('MONGO_DB') ?: 'intern_app_profiles';
@@ -47,21 +59,37 @@ $redisPass   = getenv('REDIS_PASSWORD') ?: null;
 // ---------------------------------------------------------------------------
 // MySQL connection
 // ---------------------------------------------------------------------------
-$mysqli = new mysqli($mysqlHost, $mysqlUser, $mysqlPass, '', (int)$mysqlPort);
-if ($mysqli->connect_error) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'MySQL connection failed: ' . $mysqli->connect_error]);
-    exit;
+$mysqli = mysqli_init();
+error_log("Connecting MySQL with SSL: " . ($mysqlSsl ? 'true' : 'false'));
+
+if ($mysqlSsl) {
+    $mysqli->ssl_set(null, null, '/etc/ssl/certs/ca-certificates.crt', null, null);
+    $connected = @$mysqli->real_connect($mysqlHost, $mysqlUser, $mysqlPass, '', (int)$mysqlPort, null, MYSQLI_CLIENT_SSL);
+} else {
+    $connected = @$mysqli->real_connect($mysqlHost, $mysqlUser, $mysqlPass, '', (int)$mysqlPort);
+}
+
+if (!$connected) {
+    error_log("MySQL connection failed: " . mysqli_connect_error());
+    jsonResponse(500, ['success' => false, 'message' => 'Database connection failed.']);
 }
 $mysqli->set_charset('utf8mb4');
 
-// Create database if it doesn't exist, then select it (preventing SQLi on DB name by using backticks safely)
+// Safe database name to prevent syntax errors
 $safeDb = preg_replace('/[^a-zA-Z0-9_]/', '', $mysqlDb); 
-$mysqli->query("CREATE DATABASE IF NOT EXISTS `{$safeDb}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-$mysqli->select_db($safeDb);
+
+// In restricted cloud environments (like TiDB Cloud), CREATE DATABASE might be forbidden.
+// We attempt it gracefully, but don't crash if it fails (using @).
+@$mysqli->query("CREATE DATABASE IF NOT EXISTS `{$safeDb}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+
+// Select the database; if this fails, the DB doesn't exist and couldn't be created.
+if (!$mysqli->select_db($safeDb)) {
+    error_log("MySQL select_db failed: " . $mysqli->error);
+    jsonResponse(500, ['success' => false, 'message' => 'Database connection failed.']);
+}
 
 // Create users table if it doesn't exist
-$mysqli->query("
+$tableCreated = $mysqli->query("
     CREATE TABLE IF NOT EXISTS `users` (
         `id`         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         `name`       VARCHAR(100)  NOT NULL,
@@ -72,17 +100,21 @@ $mysqli->query("
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ");
 
+if (!$tableCreated) {
+    error_log("MySQL users table creation failed: " . $mysqli->error);
+    jsonResponse(500, ['success' => false, 'message' => 'Database initialization failed.']);
+}
+
 // ---------------------------------------------------------------------------
 // MongoDB connection
 // ---------------------------------------------------------------------------
 try {
     $mongoClient     = new MongoDB\Client($mongoUri);
-    $mongoDb         = $mongoClient->$mongoDbNm;
-    $profilesCollection = $mongoDb->profiles;
+    $mongoDbSelected = $mongoClient->$mongoDbNm;
+    $profilesCollection = $mongoDbSelected->profiles;
 } catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'MongoDB connection failed: ' . $e->getMessage()]);
-    exit;
+    error_log("MongoDB connection failed: " . $e->getMessage());
+    jsonResponse(500, ['success' => false, 'message' => 'Database connection failed.']);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +126,8 @@ try {
         'host'   => $redisHost,
         'port'   => (int)$redisPort,
     ];
+    
+    // Add password if provided
     if ($redisPass !== null && $redisPass !== '') {
         $redisConfig['password'] = $redisPass;
     }
@@ -101,9 +135,8 @@ try {
     $redis = new Predis\Client($redisConfig);
     $redis->ping(); // verify connectivity
 } catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Redis connection failed: ' . $e->getMessage()]);
-    exit;
+    error_log("Redis connection failed: " . $e->getMessage());
+    jsonResponse(500, ['success' => false, 'message' => 'Database connection failed.']);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,16 +147,11 @@ function validateToken(Predis\Client $redis, ?string $token): ?int
     if ($token === null || $token === '') {
         return null;
     }
-    $userId = $redis->get('session:' . $token);
-    return $userId !== null ? (int) $userId : null;
-}
-
-// ---------------------------------------------------------------------------
-// Helper: send a JSON response and exit
-// ---------------------------------------------------------------------------
-function jsonResponse(int $httpCode, array $data): void
-{
-    http_response_code($httpCode);
-    echo json_encode($data);
-    exit;
+    try {
+        $userId = $redis->get('session:' . $token);
+        return $userId !== null ? (int) $userId : null;
+    } catch (Exception $e) {
+        error_log("Redis get token failed: " . $e->getMessage());
+        return null;
+    }
 }

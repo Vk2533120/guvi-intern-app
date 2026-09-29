@@ -128,7 +128,7 @@ To see the data behind it:
 
 - CSRF protection and rate limiting on the login endpoint
 - Email verification and a password reset flow
-- Moving the database credentials into an environment file
+
 ## Run with Docker
 
 This project is fully containerized and can be configured via environment variables.
@@ -151,6 +151,7 @@ You can configure the application in `php/db.php` by setting these environment v
 - `MYSQL_USER` (default: root)
 - `MYSQL_PASSWORD` (default: "")
 - `MYSQL_DATABASE` (default: intern_app)
+- `MYSQL_SSL` (default: false, set to 'true' to use TLS/SSL for MySQL)
 - `MONGO_URI` (default: mongodb://127.0.0.1:27017, supports mongodb+srv://)
 - `MONGO_DB` (default: intern_app_profiles)
 - `REDIS_HOST` (default: 127.0.0.1)
